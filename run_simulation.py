@@ -10,9 +10,11 @@ WHAT IS FITTED AND REPORTED
 ---------------------------
   * ONE constrained method is fitted and reported, 'CRF': the
     forest-level lambda correction with lambda selected so that the OOB
-    calibration slope equals 1 (formerly 'ALG4-lamOOB'). The other
-    variants remain implemented and reachable through CRF_VARIANTS or
-    compare_corrections(), but they are no longer part of the study.
+    calibration slope equals 1. This is the only correction implemented
+    -- the per-tree variants that preceded it (an iterated per-tree
+    update and a greedy per-leaf heuristic, plus their shared closed
+    form) were dropped once the forest-level correction superseded
+    them; see the CORRECTIONS section below.
   * Baselines are RF, NN and XGBoost, all at the hyperparameters used in
     the constrained-neural-network code (RF_PARAMS, NN_PARAMS,
     XGB_PARAMS below). Lasso remains implemented but is not fitted.
@@ -22,6 +24,12 @@ WHAT IS FITTED AND REPORTED
     LaTeX, alongside the per-replication file, the summary file, the
     prediction files and the figures.
   * The CRF forest is grown with N_TREES = 500 trees.
+  * The post-hoc PADDING comparator is fitted in the same study,
+    as a further method ('Padding'). It is not a constrained forest
+    and takes no lambda: it is the staged residual forest the paper
+    contrasts the constraint with, run on the same replication's
+    data so that its column compares with the CRF column cell by
+    cell.
 
 -------------------------------------------------------------------
 THE CONSTRAINTS
@@ -71,30 +79,44 @@ CORRECTIONS  (config: CORRECTION)
                 own OOB sample, so per-tree feasibility does not compose
                 into feasibility for the averaged forest. Correcting the
                 aggregate addresses exactly the quantity that is
-                evaluated.
-
-'tree_lambda'   ALG 1, per tree, calibrated on that tree's own OOB
-                sample:
-                    v <- v - lam ( r_U w^U + r_L w^L ),  iterated.
-                Exactly gradient descent on (1/2)(r_U^2 + r_L^2);
-                converges for every lam < 2 / eigmax(W W^T), and since
-                sum_l (w_l)^2 <= 1 any lam <= 1 is safe.
-
-                IMPORTANT, and easy to miss: for this update lam is a
-                STEP SIZE, not a regularizer. The fixed point is exact
-                constraint satisfaction on the tree's OOB sample, so
-                every lam that converges lands on the SAME leaf values
-                -- lam only sets how many iterations that takes.
-
-'greedy'        ALG 2 (the priority-order heuristic): sort leaves by
-                dominant-stratum coverage, absorb the LEAF-LOCAL
-                residual delta_j = v_j - ybar_j^{d_j}, broadcast along
-                w^{d_j}. Retained for comparison only.
-
-'exact'         The closed form of 'tree_lambda' at convergence,
-                    v* = v0 - W^T (W W^T)^{-1} r(v0).
+                evaluated. (An earlier per-tree version confirmed this
+                empirically -- three independent derivations of a
+                per-tree update, an iterated step, its greedy heuristic,
+                and their shared closed form, all converged to the same
+                leaves but did not compose into forest-level
+                feasibility -- and was removed once the point was made.)
 
 'none'          Plain forest, no correction.
+
+-------------------------------------------------------------------
+THE PADDING COMPARATOR  (config: PADDING_VARIANTS)
+-------------------------------------------------------------------
+A post-hoc alternative to constraining the forest: a staged
+residual forest that appends the running prediction to the design
+matrix as an extra ('padded') feature.
+
+    Stage 0 :  f0 = RF(X -> y)
+    Stage k :  X_k = [X, f_{k-1}] ;
+               f_k = f_{k-1} + RF(X_k -> y - f_{k-1})
+
+Stages are not a fixed count. They run until the correction stops
+moving -- a negligible stage increment, or no improvement in the
+training residual, for PAD_STAGE_PATIENCE consecutive stages --
+with PAD_MAX_STAGES as a hard cap. Which of these ended a fit is
+recorded per row as stop_reason ('converged', 'stalled',
+'diverged' or 'max_stages'), so a fit that hit the cap is never
+mistaken for one that settled. Replications therefore differ in
+length, and the per-stage trajectory of every metric is written
+to stage_metrics.csv.
+
+'Padding'       THE METHOD REPORTED, and the only one implemented.
+                In-sample residual targets and in-sample padded
+                feature at every stage, faithful to the original
+                code of Zhang and Lu (2012). (An out-of-bag variant,
+                which fit every stage against honest OOB residuals
+                instead, was tried and dropped: never reported, so
+                removed from the file rather than carried as an
+                unused branch.)
 
 ALG 3 (stratum-balance constrained splits during growth) is available as
 CONSTRAINED_SPLITS = True with BACKEND = 'custom'.
@@ -156,12 +178,12 @@ Three DGPs, N_SIMS replications each, n_train = n_test = 500, p = 200:
               f(X) = 10 sin(pi X1 X2) + 20 (X3 - 0.5)^2
                      + 10 X4 + 5 X5 + 0 * sum_{j=6}^{200} Xj
 
-Methods: CRF (this method) / RF (sklearn RandomForestRegressor) /
-NN (sklearn MLPRegressor) / XGBoost (xgboost XGBRegressor).
-Metrics: eta = OLS slope of yhat on y (target 1), r^2 (Pearson), RMSE,
-MAE, and theta_hat - theta_oracle (target 0), plus the two group
-residuals r_U, r_L; mean and SD over replications, on Train and Test
-rows.
+Methods: CRF (this method) / Padding (the post-hoc comparator) / RF
+(sklearn RandomForestRegressor) / NN (sklearn MLPRegressor) / XGBoost
+(xgboost XGBRegressor).
+Metrics: eta = OLS slope of yhat on y (target 1), RMSE, MAE, and
+theta_hat - theta_oracle (target 0); mean and SD over replications, on
+Train and Test rows.
 
 -------------------------------------------------------------------
 OUTPUTS  (all in OUT_DIR)
@@ -173,6 +195,8 @@ OUTPUTS  (all in OUT_DIR)
     predictions_sim<k>.csv  the y / yhat / W vectors behind the figures
     all_predictions.csv     every replication's vectors (SAVE_ALL_PRED)
     lambda_sweep.csv        OOB and test curves against lambda
+    stage_metrics.csv       per-stage trajectory of the padding
+                            comparator, plus rel_step
     run_config.txt          the configuration and versions of this run
     <dgp>/*.png             the figures, one directory per DGP
 
@@ -184,7 +208,6 @@ USAGE
     python run_simulation.py --figures        # redraw from saved results
     python run_simulation.py --tables         # rebuild tables from the CSV
     python run_simulation.py --sweep          # lambda sweep, all DGPs
-    python run_simulation.py --compare        # corrections head-to-head
     CRF_SMOKE=1 python run_simulation.py      # 2 reps, tiny budgets
 
     # Partial runs. Both flags restrict what is FITTED; the results are
@@ -297,22 +320,45 @@ TUNE_GRID = dict(
 #   correction='forest_lambda', lambda_select='oob_slope'   <- reported
 #   correction='forest_lambda', lambda_select='fixed'       lam fixed
 #   correction='forest_lambda', lambda_select='oob_cv'      cross-fitted
-#   correction='tree_lambda'    per-tree, iterated (lam is a step size)
-#   correction='exact'          the closed form that update converges to
-#   correction='greedy'         the priority-order heuristic
 CRF_VARIANTS = {
     "CRF": dict(correction="forest_lambda", lambda_select="oob_slope"),
 }
 # Dropped from earlier runs, all deliberately:
-#   "ALG1-lam"    -- per-tree feasibility does not compose into
-#                    feasibility for the averaged forest.
-#   "ALG1-exact"  -- provably identical to ALG1-lam.
-#   "ALG2-greedy" -- worse than no correction on friedman2 and linear,
-#                    and its two group residuals move in the SAME
-#                    direction instead of balancing.
+#   the per-tree correction (iterated update, its closed form, and a
+#     greedy per-leaf heuristic) -- per-tree feasibility does not
+#     compose into feasibility for the averaged forest; removed from
+#     the file entirely once the forest-level correction superseded it.
 #   "ALG4-lam1"   -- lam = 1 is exact OOB satisfaction, which leaves the
 #                    test slope short of 1; superseded by lamOOB.
 #   "ALG4-lamCV"  -- cross-fitted selection, materially the same lam.
+
+# ---- the post-hoc padding comparator --------------------------------
+# The staged residual forest of the docstring, fitted as a further
+# method on the same replication's data. The PAD_ prefix keeps its
+# hyperparameters clear of the constrained forest's own settings above.
+PADDING_VARIANTS = {
+    "Padding": dict(),
+}
+# Dropped: an out-of-bag variant ('Padding-OOB'), which fit every stage
+# against honest OOB residuals instead of in-sample ones. It addressed
+# a real circularity concern -- fitting a residual model on data it can
+# already interpolate -- but was never reported, so it was removed from
+# PaddedForest entirely rather than kept as an unused code path.
+PAD_TREES_BASE  = 50      # trees in the stage-0 forest
+PAD_TREES_STAGE = 30      # trees in each residual forest after it
+PAD_MAX_DEPTH = 6
+PAD_MIN_SAMPLES_SPLIT = 2
+
+# The stopping rule. Stages run until the correction stops moving rather
+# than for a fixed count, which has been 25-45 stages in testing, so the
+# padding columns cost several times what a fixed-10-stage version did.
+# Lower PAD_MAX_STAGES first if a run has to fit a fixed window;
+# PAD_STAGE_PATIENCE is the next knob.
+PAD_MAX_STAGES = 2500
+PAD_STAGE_TOL = 1e-4         # relative RMS of the stage increment
+PAD_STAGE_MIN_DELTA = 1e-4   # relative train-RMSE improvement that counts
+PAD_STAGE_PATIENCE = 25      # consecutive quiet stages before stopping
+SAVE_STAGE_TRACE = True      # write stage_metrics.csv
 
 BASELINES = ("RF", "NN", "XGBoost")
 
@@ -383,6 +429,7 @@ SUMMARY_CSV      = "summary_mean_sd.csv"
 RESULTS_TABLE_CSV = "results_table.csv"
 RESULTS_TABLE_TEX = "results_table.tex"
 SWEEP_CSV        = "lambda_sweep.csv"
+STAGE_CSV        = "stage_metrics.csv"
 ALL_PRED_CSV     = "all_predictions.csv"
 RUN_CONFIG_TXT   = "run_config.txt"
 
@@ -392,7 +439,8 @@ RUN_CONFIG_TXT   = "run_config.txt"
 SAVE_PREDICTIONS     = True    # the replication behind the figures
 SAVE_ALL_PREDICTIONS = os.environ.get("CRF_SAVE_ALL", "0") == "1"
 
-METHOD_ORDER = tuple(CRF_VARIANTS) + BASELINES
+METHOD_ORDER = (tuple(CRF_VARIANTS) + tuple(PADDING_VARIANTS)
+                + BASELINES)
 
 # ---- smoke test --------------------------------------------------
 # A dry run that exercises every code path in about a minute, for
@@ -411,6 +459,8 @@ if SMOKE_TEST:
     LASSO_PARAMS = dict(LASSO_PARAMS, cv=3)
     SWEEP_REPS = 2
     TREE_FIGS_N = 2
+    PAD_TREES_BASE, PAD_TREES_STAGE = 20, 15
+    PAD_MAX_STAGES = 40
 
 
 # ==================================================================
@@ -641,119 +691,6 @@ class SkTreeWrapper:
 
 
 # ==================================================================
-# PER-TREE CORRECTIONS  (ALG 1, ALG 2, closed form)
-# ==================================================================
-
-def _stratum_setup(tree, X_cal, y_cal):
-    y_cal = np.asarray(y_cal, float)
-    mu = float(np.mean(y_cal))
-    mask_U = y_cal >= mu
-    mask_L = ~mask_U
-    N_U, N_L = int(mask_U.sum()), int(mask_L.sum())
-
-    ids = tree.leaf_ids()
-    m = len(ids)
-    pos = {int(i): j for j, i in enumerate(ids)}
-    sample_col = np.array([pos[int(i)] for i in tree.apply(X_cal)],
-                          dtype=np.int64)
-
-    n_U = np.bincount(sample_col[mask_U], minlength=m).astype(float)
-    n_L = np.bincount(sample_col[mask_L], minlength=m).astype(float)
-    return dict(y=y_cal, mask_U=mask_U, mask_L=mask_L, N_U=N_U, N_L=N_L,
-                ids=ids, m=m, sample_col=sample_col, n_U=n_U, n_L=n_L,
-                w_U=n_U / N_U if N_U else np.zeros(m),
-                w_L=n_L / N_L if N_L else np.zeros(m),
-                ybar_U=float(y_cal[mask_U].mean()) if N_U else np.nan,
-                ybar_L=float(y_cal[mask_L].mean()) if N_L else np.nan,
-                v=tree.get_leaf_vector())
-
-
-def _residuals(v, s):
-    return (float(s["w_U"] @ v - s["ybar_U"]),
-            float(s["w_L"] @ v - s["ybar_L"]))
-
-
-def correct_tree_lambda(tree, X_cal, y_cal, lam=1.0, tol=1e-8,
-                        max_iter=20000):
-    """ALG 1: v <- v - lam ( r_U w^U + r_L w^L ), iterated to tolerance.
-
-    lam is a step size only -- see the module docstring. Returns the
-    iteration count so the budget can be checked.
-    """
-    s = _stratum_setup(tree, X_cal, y_cal)
-    if s["N_U"] == 0 or s["N_L"] == 0:
-        return tree, {}
-    v = s["v"]
-    n_it = 0
-    for _ in range(max_iter):
-        r_U, r_L = _residuals(v, s)
-        if abs(r_U) < tol and abs(r_L) < tol:
-            break
-        v = v - lam * (r_U * s["w_U"] + r_L * s["w_L"])
-        n_it += 1
-    tree.set_leaf_vector(v)
-    return tree, {"iters": n_it, "r_final": _residuals(v, s)}
-
-
-def correct_exact(tree, X_cal, y_cal):
-    """Closed form of ALG 1 at convergence: the projection of v onto the
-    intersection of the two constraint hyperplanes,
-        v* = v0 - W^T (W W^T)^{-1} r(v0).
-    """
-    s = _stratum_setup(tree, X_cal, y_cal)
-    if s["N_U"] == 0 or s["N_L"] == 0:
-        return tree, {}
-    W = np.vstack([s["w_U"], s["w_L"]])
-    r = np.array(_residuals(s["v"], s))
-    # lstsq guards the degenerate case w^U parallel to w^L
-    v = s["v"] - W.T @ np.linalg.lstsq(W @ W.T, r, rcond=None)[0]
-    tree.set_leaf_vector(v)
-    return tree, {"r_before": r.tolist(), "r_after": list(_residuals(v, s))}
-
-
-def correct_greedy(tree, X_cal, y_cal, lam=1.0, tol=1e-8, max_iter=500):
-    """ALG 2, with the convergence test moved inside the leaf loop."""
-    s = _stratum_setup(tree, X_cal, y_cal)
-    if s["N_U"] == 0 or s["N_L"] == 0:
-        return tree, {}
-    m, v, n_U, n_L = s["m"], s["v"], s["n_U"], s["n_L"]
-    ybar_leaf_U = np.full(m, np.nan)
-    ybar_leaf_L = np.full(m, np.nan)
-    for j in range(m):
-        inj = s["sample_col"] == j
-        if n_U[j] > 0:
-            ybar_leaf_U[j] = s["y"][inj & s["mask_U"]].mean()
-        if n_L[j] > 0:
-            ybar_leaf_L[j] = s["y"][inj & s["mask_L"]].mean()
-    priority = np.argsort(-np.maximum(n_U, n_L))
-
-    done = False
-    sweeps = 0
-    for _ in range(max_iter):
-        r_U, r_L = _residuals(v, s)
-        if abs(r_U) < tol and abs(r_L) < tol:
-            break
-        sweeps += 1
-        for j in priority:
-            if n_U[j] >= n_L[j]:
-                if n_U[j] == 0:
-                    continue
-                v = v - lam * (v[j] - ybar_leaf_U[j]) * s["w_U"]
-            else:
-                if n_L[j] == 0:
-                    continue
-                v = v - lam * (v[j] - ybar_leaf_L[j]) * s["w_L"]
-            r_U, r_L = _residuals(v, s)
-            if abs(r_U) < tol and abs(r_L) < tol:
-                done = True
-                break
-        if done:
-            break
-    tree.set_leaf_vector(v)
-    return tree, {"sweeps": sweeps, "r_final": _residuals(v, s)}
-
-
-# ==================================================================
 # FOREST
 # ==================================================================
 
@@ -825,34 +762,12 @@ class UnbiasedForest:
 
         if self.correction == "none":
             return self
-        if self.correction in ("tree_lambda", "exact", "greedy"):
-            self._apply_per_tree(X, y)
-        elif self.correction == "forest_lambda":
+        if self.correction == "forest_lambda":
             self._apply_forest_lambda(X, y)
         else:
             raise ValueError("unknown correction: %r" % self.correction)
         self._refresh_oob(X, y)
         return self
-
-    def _apply_per_tree(self, X, y):
-        iters = []
-        for b, tree in enumerate(self.trees):
-            oob = self.oob_indices[b]
-            Xc, yc = (X[oob], y[oob]) if len(oob) else (X, y)
-            if self.correction == "tree_lambda":
-                _, h = correct_tree_lambda(tree, Xc, yc, self.lam,
-                                           self.tol, self.max_iter)
-                iters.append(h.get("iters", 0))
-            elif self.correction == "exact":
-                correct_exact(tree, Xc, yc)
-            else:
-                _, h = correct_greedy(tree, Xc, yc, self.lam, self.tol,
-                                      min(self.max_iter, 500))
-                iters.append(h.get("sweeps", 0))
-        self.lam_used = self.lam
-        if iters:
-            self.info["iters_median"] = float(np.median(iters))
-            self.info["iters_max"] = int(np.max(iters))
 
     # ------- forest-level lambda correction ------------------------
     def _build_forest_geometry(self, X, y, use=None):
@@ -1040,65 +955,155 @@ def mae(y_true, y_pred):
                                 - np.asarray(y_true, float))))
 
 
-def group_residuals(y_true, y_pred):
-    """(r_U, r_L): mean(yhat - y) within each stratum, split at mean(y)."""
-    y_true, y_pred = np.asarray(y_true, float), np.asarray(y_pred, float)
-    mu = float(np.mean(y_true))
-    U, L = y_true >= mu, y_true < mu
-    return (float(np.mean(y_pred[U] - y_true[U])),
-            float(np.mean(y_pred[L] - y_true[L])))
-
-
-def r2_pearson(y_true, y_pred):
-    """Squared Pearson correlation. Measures how well the predictions
-    ORDER the outcomes; invariant to any affine rescaling, so a
-    correction that changes the slope leaves it untouched."""
-    y_true, y_pred = np.asarray(y_true, float), np.asarray(y_pred, float)
-    sd = np.std(y_true) * np.std(y_pred)
-    if sd < 1e-12:
-        return np.nan
-    return float(np.cov(y_true, y_pred, bias=True)[0, 1] / sd) ** 2
-
-
-def r2_ols(y_true, y_pred):
-    """Coefficient of determination 1 - SSR/SST, i.e. accuracy against
-    the identity line. NOT invariant to rescaling and can go negative.
-
-    Report BOTH r2 variants: they diverge under a slope correction. A
-    correction that fixes eta while inflating RMSE leaves r2_pearson
-    essentially unchanged but drives r2_ols down -- which is precisely
-    the bias/variance trade-off, made visible."""
-    y_true, y_pred = np.asarray(y_true, float), np.asarray(y_pred, float)
-    sst = float(np.sum((y_true - np.mean(y_true)) ** 2))
-    if sst < 1e-12:
-        return np.nan
-    return 1.0 - float(np.sum((y_pred - y_true) ** 2)) / sst
-
-
 #: Metrics reported everywhere, in table order. bias == eta == the OLS
 #: slope of yhat on y, whose departure from 1 IS the systematic
-#: prediction bias.
-METRIC_KEYS = ("bias", "r2_pearson", "rmse", "mae", "theta_delta")
-SUMMARY_COLS = list(METRIC_KEYS) + ["r2_ols", "r_U", "r_L"]
+#: prediction bias. This is exactly the set that appears in the paper's
+#: tables; r^2 (both variants) and the two group residuals r_U, r_L
+#: were computed in earlier runs but never reported, so they were
+#: dropped along with the figures/columns that existed only to show
+#: them.
+METRIC_KEYS = ("bias", "rmse", "mae", "theta_delta")
+SUMMARY_COLS = list(METRIC_KEYS)
 METRIC_LABELS = {"bias": r"$\hat\eta$ (slope)", "rmse": "RMSE",
-                 "r2_pearson": r"$r^2$ (Pearson)", "r2_ols": r"$R^2$ (OLS)",
-                 "mae": "MAE", "r_U": r"$r_U$", "r_L": r"$r_L$",
+                 "mae": "MAE",
                  "theta_delta": r"$\hat\theta-\hat\theta_{\rm oracle}$"}
-METRIC_REFERENCE = {"bias": 1.0, "r2_pearson": None, "r2_ols": None,
-                    "rmse": None, "mae": None, "r_U": 0.0, "r_L": 0.0,
+METRIC_REFERENCE = {"bias": 1.0, "rmse": None, "mae": None,
                     "theta_delta": 0.0}
 
 
 def compute_metrics(y_true, y_pred, w=None):
-    rU, rL = group_residuals(y_true, y_pred)
     return dict(bias=eta_slope(y_true, y_pred),
                 rmse=rmse(y_true, y_pred),
-                r2_pearson=r2_pearson(y_true, y_pred),
-                r2_ols=r2_ols(y_true, y_pred),
                 mae=mae(y_true, y_pred),
                 theta_delta=(np.nan if w is None
-                             else theta_delta(y_true, y_pred, w)),
-                r_U=rU, r_L=rL)
+                             else theta_delta(y_true, y_pred, w)))
+
+
+# ==================================================================
+# THE PADDING COMPARATOR
+# ==================================================================
+# Post-hoc staging rather than a constraint: nothing here rewrites a
+# leaf. Kept in this file, and fitted inside the same replication as
+# everything else, so the comparison is on identical data.
+
+class PaddedForest:
+    """Staged residual forest with the running prediction as an extra
+    column. Faithful to the original Zhang and Lu (2012) code: every
+    stage is fit against the in-sample residual and padded with the
+    in-sample prediction.
+    """
+
+    def __init__(self, n_trees_base=PAD_TREES_BASE,
+                 n_trees_stage=PAD_TREES_STAGE, max_depth=PAD_MAX_DEPTH,
+                 min_samples_split=PAD_MIN_SAMPLES_SPLIT,
+                 max_stages=PAD_MAX_STAGES, tol=PAD_STAGE_TOL,
+                 min_delta=PAD_STAGE_MIN_DELTA,
+                 patience=PAD_STAGE_PATIENCE,
+                 random_state=SEED_BASE):
+        self.n_trees_base = n_trees_base
+        self.n_trees_stage = n_trees_stage
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.max_stages = max_stages
+        self.tol = tol
+        self.min_delta = min_delta
+        self.patience = patience
+        self.random_state = random_state
+        self.models = []
+        self.stage_trace = []   # one dict per stage, train and test metrics
+        self.n_stages_ = None   # stages actually run, base stage included
+        self.stop_reason_ = None
+
+    def _forest(self, n_trees, seed):
+        # n_jobs is 1 for the same reason as RF_PARAMS: replications are
+        # already spread across processes by N_WORKERS, and nesting the
+        # two oversubscribes the machine.
+        return SkRF(
+            n_estimators=n_trees,
+            max_depth=self.max_depth,
+            min_samples_split=self.min_samples_split,
+            max_features="sqrt",
+            bootstrap=True,
+            random_state=seed,
+            n_jobs=1,
+        )
+
+    def fit(self, X, y, X_test=None, y_test=None):
+        self.models = []
+        self.stage_trace = []
+
+        base = self._forest(self.n_trees_base, self.random_state)
+        base.fit(X, y)
+        self.models.append(base)
+
+        train_pred = base.predict(X)
+        residuals = y - train_pred
+        test_pred = base.predict(X_test) if X_test is not None else None
+        self._record_stage(0, y, train_pred, y_test, test_pred)
+
+        sd_y = float(np.std(y)) or 1.0
+        best_rmse = float(np.sqrt(np.mean(residuals ** 2)))
+        quiet = 0                      # consecutive stages that moved nothing
+        no_gain = 0                    # consecutive stages that gained nothing
+        self.stop_reason_ = "max_stages"
+
+        for stage in range(1, self.max_stages):
+            X_padded = np.column_stack([X, train_pred])
+            model = self._forest(self.n_trees_stage,
+                                 self.random_state + stage)
+            model.fit(X_padded, residuals)
+            self.models.append(model)
+
+            increment = model.predict(X_padded)
+            train_pred = train_pred + increment
+            residuals = y - train_pred
+            if X_test is not None:
+                test_pred = test_pred + model.predict(
+                    np.column_stack([X_test, test_pred]))
+
+            # How much this stage moved, and whether it bought anything.
+            rel_step = float(np.sqrt(np.mean(increment ** 2))) / sd_y
+            stage_rmse = float(np.sqrt(np.mean(residuals ** 2)))
+            gained = (best_rmse - stage_rmse) / max(best_rmse, 1e-12)
+            if gained > self.min_delta:
+                best_rmse = stage_rmse
+                no_gain = 0
+            else:
+                no_gain += 1
+            quiet = quiet + 1 if rel_step < self.tol else 0
+
+            self._record_stage(stage, y, train_pred, y_test, test_pred,
+                               rel_step=rel_step)
+
+            if not np.isfinite(stage_rmse):
+                self.stop_reason_ = "diverged"
+                break
+            if quiet >= self.patience:
+                self.stop_reason_ = "converged"
+                break
+            if no_gain >= self.patience:
+                self.stop_reason_ = "stalled"
+                break
+
+        self.n_stages_ = len(self.models)
+        self.train_pred_ = train_pred
+        return self
+
+    def _record_stage(self, stage, y, train_pred, y_test, test_pred,
+                      rel_step=np.nan):
+        row = {"stage": stage, "rel_step": rel_step}
+        for key, value in compute_metrics(y, train_pred).items():
+            row["train_" + key] = value
+        if y_test is not None and test_pred is not None:
+            for key, value in compute_metrics(y_test, test_pred).items():
+                row["test_" + key] = value
+        self.stage_trace.append(row)
+
+    def predict(self, X):
+        pred = self.models[0].predict(X)
+        for model in self.models[1:]:
+            pred = pred + model.predict(np.column_stack([X, pred]))
+        return pred
 
 
 # ==================================================================
@@ -1242,6 +1247,15 @@ def fit_crf(name, X_tr, y_tr, sim, forest_kw=None):
                           **dict(fk, **kw)).fit(X_tr, y_tr)
 
 
+def fit_padding(name, X_tr, y_tr, X_te, y_te, sim):
+    """One padding variant on one replication. The test sample is passed
+    to fit() only so that the stage trace can carry test metrics; no
+    stage is selected on it."""
+    return PaddedForest(random_state=SEED_BASE + sim,
+                        **PADDING_VARIANTS[name]).fit(X_tr, y_tr,
+                                                      X_te, y_te)
+
+
 def fit_quietly(estimator, X, y):
     """Fit while suppressing convergence chatter from the full-budget
     MLP, which by construction runs its whole budget rather than
@@ -1354,7 +1368,7 @@ def run_one(task):
     rng = np.random.RandomState(SEED_BASE + sim)
     X_tr, y_tr = gen_data(dgp, N_TRAIN, rng)
     X_te, y_te = gen_data(dgp, N_TEST, rng)
-    rows, frames = [], []
+    rows, frames, stages = [], [], []
 
     # W is drawn from its own stream, at the TRAINING sd on both splits.
     w_rng = np.random.RandomState(W_SEED_BASE + sim)
@@ -1381,6 +1395,29 @@ def run_one(task):
             frames.append(_pred_frame(dgp, sim, name, "Test", y_te, p_te,
                                       w_te, lam))
 
+    # The post-hoc comparator. Two extra columns per row, n_stages and
+    # stop_reason, are NaN for every other method; nothing downstream
+    # aggregates them, so the shared schema is unaffected.
+    for name in PADDING_VARIANTS:
+        if methods is not None and name not in methods:
+            continue
+        m = fit_padding(name, X_tr, y_tr, X_te, y_te, sim)
+        p_tr, p_te = m.train_pred_, m.predict(X_te)
+        pad_rows = metric_rows(dgp, sim, name, y_tr, p_tr, y_te, p_te,
+                               w_tr=w_tr, w_te=w_te)
+        for r in pad_rows:
+            r["n_stages"], r["stop_reason"] = m.n_stages_, m.stop_reason_
+        rows += pad_rows
+        if SAVE_STAGE_TRACE:
+            stages += [dict(dgp=dgp, method=name, sim=sim,
+                            stop_reason=m.stop_reason_, **t)
+                       for t in m.stage_trace]
+        if SAVE_ALL_PREDICTIONS:
+            frames.append(_pred_frame(dgp, sim, name, "Train", y_tr, p_tr,
+                                      w_tr))
+            frames.append(_pred_frame(dgp, sim, name, "Test", y_te, p_te,
+                                      w_te))
+
     for name, pred in fit_baselines(X_tr, y_tr, sim, forest_kw,
                                     which=methods).items():
         p_tr, p_te = pred(X_tr), pred(X_te)
@@ -1391,7 +1428,9 @@ def run_one(task):
                                       w_tr))
             frames.append(_pred_frame(dgp, sim, name, "Test", y_te, p_te,
                                       w_te))
-    return rows, (pd.concat(frames, ignore_index=True) if frames else None)
+    return (rows,
+            pd.concat(frames, ignore_index=True) if frames else None,
+            pd.DataFrame(stages) if stages else None)
 
 
 # ==================================================================
@@ -1418,18 +1457,16 @@ def lambda_sweep(n_reps=5, grid=SWEEP_GRID, dgps=DGPS, forest_kw=None):
                 f._refresh_oob(X_tr, y_tr)
                 ok = ~np.isnan(f.oob_pred)
                 p = f.predict(X_te)
-                rU, rL = group_residuals(y_te, p)
                 rows.append(dict(dgp=dgp, sim=s, lam=lam,
                                  oob_eta=eta_slope(y_tr[ok],
                                                    f.oob_pred[ok]),
                                  test_eta=eta_slope(y_te, p),
-                                 test_rmse=rmse(y_te, p),
-                                 test_r_U=rU, test_r_L=rL))
+                                 test_rmse=rmse(y_te, p)))
     df = pd.DataFrame(rows)
     os.makedirs(OUT_DIR, exist_ok=True)
     merge_csv(df, os.path.join(OUT_DIR, SWEEP_CSV), ["dgp", "sim", "lam"])
-    agg = df.groupby(["dgp", "lam"])[["oob_eta", "test_eta", "test_rmse",
-                                      "test_r_U", "test_r_L"]].mean()
+    agg = df.groupby(["dgp", "lam"])[["oob_eta", "test_eta",
+                                      "test_rmse"]].mean()
     print("\nLambda sweep (%d reps per DGP, means)" % n_reps)
     print(agg.round(3).to_string())
     print("\nlam selected by OOB slope = 1, and the test slope it gives:")
@@ -1442,49 +1479,6 @@ def lambda_sweep(n_reps=5, grid=SWEEP_GRID, dgps=DGPS, forest_kw=None):
                  np.interp(lam_star, d.index.values, d["test_eta"].values),
                  np.interp(lam_star, d.index.values,
                            d["test_rmse"].values)))
-    return df
-
-
-# ==================================================================
-# CORRECTION COMPARISON
-# ==================================================================
-
-def compare_corrections(dgp="friedman1", n_reps=5):
-    variants = [("none", dict(correction="none")),
-                ("ALG1 tree_lambda lam=1", dict(correction="tree_lambda",
-                                                lam=1.0)),
-                ("ALG1 closed form", dict(correction="exact")),
-                ("ALG2 greedy lam=1", dict(correction="greedy", lam=1.0)),
-                ("forest_lambda lam=1", dict(correction="forest_lambda",
-                                             lambda_select="fixed", lam=1.0)),
-                ("forest_lambda OOB-sel", dict(correction="forest_lambda",
-                                               lambda_select="oob_slope"))]
-    out = []
-    for name, kw in variants:
-        acc, lams = [], []
-        t0 = time.time()
-        for s in range(n_reps):
-            rng = np.random.RandomState(SEED_BASE + s)
-            X_tr, y_tr = gen_data(dgp, N_TRAIN, rng)
-            X_te, y_te = gen_data(dgp, N_TEST, rng)
-            f = UnbiasedForest(backend=BACKEND, random_state=SEED_BASE + s,
-                               **dict(FOREST_PARAMS, **kw)).fit(X_tr, y_tr)
-            p = f.predict(X_te)
-            rU, rL = group_residuals(y_te, p)
-            acc.append((eta_slope(y_te, p), rmse(y_te, p), rU, rL))
-            lams.append(f.lam_used if f.lam_used is not None else np.nan)
-        a = np.array(acc)
-        # 'none' records no lam at all, so guard the all-NaN mean.
-        lam_mean = np.nanmean(lams) if np.isfinite(lams).any() else np.nan
-        out.append(dict(correction=name, lam=lam_mean,
-                        test_eta=a[:, 0].mean(), test_rmse=a[:, 1].mean(),
-                        test_r_U=a[:, 2].mean(), test_r_L=a[:, 3].mean(),
-                        secs_per_rep=(time.time() - t0) / n_reps))
-    df = pd.DataFrame(out)
-    pd.set_option("display.width", 170)
-    print("\nCorrections compared (dgp=%s, %d reps, backend=%s)"
-          % (dgp, n_reps, BACKEND))
-    print(df.to_string(index=False, float_format=lambda v: "%.4f" % v))
     return df
 
 
@@ -1577,41 +1571,6 @@ def fig_metric_box(per_sim, dgp, split="Test", out_dir=None):
     return path
 
 
-def fig_constraints(per_sim, dgp, split="Test", out_dir=None):
-    """The two group residuals r_U and r_L by method: the constraints the
-    method is built to satisfy, with zero marked."""
-    plt = _lazy_plt()
-    out_dir = out_dir or OUT_DIR
-    d = per_sim[(per_sim.dgp == dgp) & (per_sim.split == split)]
-    fig, axes = plt.subplots(1, 2,
-                             figsize=(0.9 * len(METHOD_ORDER) + 4.0,
-                                      4.8 if len(METHOD_ORDER) > 3 else 3.6))
-    for ax, met in zip(axes, ("r_U", "r_L")):
-        data, labels, colors = [], [], []
-        for meth in METHOD_ORDER:
-            v = d[d.method == meth][met].dropna().values
-            if len(v):
-                data.append(v)
-                labels.append(meth)
-                colors.append(METHOD_COLORS.get(meth, "#7F8C8D"))
-        bp = _boxplot(ax, data, labels, widths=0.6)
-        for patch, c in zip(bp["boxes"], colors):
-            patch.set_facecolor(c)
-            patch.set_alpha(0.45)
-            patch.set_edgecolor(c)
-        ax.axhline(0.0, color="black", ls="--", lw=1)
-        ax.set_ylabel(METRIC_LABELS[met])
-        ax.grid(True, axis="y", alpha=0.25)
-        if len(labels) > 3:
-            ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
-    fig.tight_layout()
-    path = os.path.join(dgp_dir(dgp, out_dir), "constraints_%s_%s.png"
-                        % (dgp_name(dgp), split.lower()))
-    fig.savefig(path, dpi=160, bbox_inches="tight")
-    plt.close(fig)
-    return path
-
-
 def _shared_limits(rec, methods, splits=("Train", "Test")):
     vals = []
     for sp in splits:
@@ -1686,7 +1645,7 @@ def fig_obs_pred(preds, dgp, out_dir=None, annotate=("bias",),
 
 
 def fig_obs_pred_method(preds, dgp, method, out_dir=None,
-                        annotate=("bias", "rmse", "r2_ols")):
+                        annotate=("bias", "rmse")):
     """Observed vs predicted for ONE method: Train and Test side by side,
     on the same shared limits used by the combined grid so panels stay
     comparable across files."""
@@ -1912,15 +1871,23 @@ def collect_predictions(sim=0, dgps=DGPS, tuned=None):
                 rec["Train"][name] = f.predict(X_tr)
             rec["Test"][name] = f.predict(X_te)
 
+        for name in PADDING_VARIANTS:
+            m = fit_padding(name, X_tr, y_tr, X_te, y_te, sim)
+            rec["Train"][name] = m.train_pred_
+            rec["Test"][name] = m.predict(X_te)
+
         for name, pred in fit_baselines(X_tr, y_tr, sim, fk).items():
             rec["Train"][name] = pred(X_tr)
             rec["Test"][name] = pred(X_te)
 
+        # The CRF's Train row is its OOB prediction, which covers only the
+        # rows `ok`; every other method is cut to the same rows so the
+        # panels of one figure are drawn on one sample.
         if CRF_TRAIN_ROW == "oob" and ok is not None:
             rec["Train_y"] = y_tr[ok]
             rec["Train_w"] = w_tr[ok]
-            for name in BASELINES:
-                if name in rec["Train"]:
+            for name in list(rec["Train"]):
+                if name not in CRF_VARIANTS:
                     rec["Train"][name] = rec["Train"][name][ok]
         preds[dgp] = rec
     return preds
@@ -1983,7 +1950,6 @@ def make_all_figures(per_sim=None, sweep=None, preds=None, sim=0,
     for dgp in dgps:
         made.append(fig_metric_box(per_sim, dgp, "Test", out_dir))
         made.append(fig_metric_box(per_sim, dgp, "Train", out_dir))
-        made.append(fig_constraints(per_sim, dgp, "Test", out_dir))
         made.append(fig_obs_pred(preds, dgp, out_dir=out_dir))
         for m in methods_in(preds[dgp]):
             made.append(fig_obs_pred_method(preds, dgp, m, out_dir=out_dir))
@@ -2016,7 +1982,6 @@ def make_all_figures(per_sim=None, sweep=None, preds=None, sim=0,
 #: versions restricted to the linear setting.
 TABLE_ROWS = (
     ("bias",        "eta_hat",                 r"$\hat\eta$",      "%.3f"),
-    ("r2_pearson",  "r2 (Pearson)",            r"$r^2$",           "%.3f"),
     ("rmse",        "RMSE",                    r"RMSE",            "%.3f"),
     ("mae",         "MAE",                     r"MAE",             "%.3f"),
     ("theta_delta", "theta_hat - theta_oracle",
@@ -2279,13 +2244,15 @@ def run_study(n_sims=None, workers=None, dgps=None, methods=None,
 
     tasks = [(d, s, tuned[d], methods)
              for d in dgps for s in range(n_sims)]
-    rows, frames = [], []
+    rows, frames, stage_frames = [], [], []
 
     def absorb(result):
-        r, fr = result
+        r, fr, st = result
         rows.extend(r)
         if fr is not None:
             frames.append(fr)
+        if st is not None:
+            stage_frames.append(st)
 
     if workers > 1:
         with ProcessPoolExecutor(max_workers=workers) as pool:
@@ -2316,6 +2283,11 @@ def run_study(n_sims=None, workers=None, dgps=None, methods=None,
         merge_csv(pd.concat(frames, ignore_index=True), ap,
                   ["dgp", "sim", "method", "split", "obs_index"])
         print("wrote", ap)
+    if stage_frames:
+        sp = os.path.join(OUT_DIR, STAGE_CSV)
+        merge_csv(pd.concat(stage_frames, ignore_index=True), sp,
+                  ["dgp", "method", "sim", "stage"])
+        print("wrote", sp)
 
     print_table(per_sim, tuned)
     write_results_table(per_sim)
@@ -2367,8 +2339,6 @@ if __name__ == "__main__":
     elif "--sweep" in args:
         lambda_sweep(n_reps=int(rest[0]) if rest else 5,
                      forest_kw=_tuned_or_none())
-    elif "--compare" in args:
-        compare_corrections(n_reps=int(rest[0]) if rest else 5)
     else:
         run_study(int(rest[0]) if rest else None, dgps=_dgps,
                   methods=_methods, merge="--merge" in args)

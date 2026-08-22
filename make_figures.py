@@ -3,17 +3,19 @@
 make_figures.py
 ===============
 Reads the outputs of run_simulation.py (predictions_sim0.csv,
-results_per_sim.csv, lambda_sweep.csv) and of run_padding.py
-(stage_metrics.csv), and redraws
+results_per_sim.csv, lambda_sweep.csv, stage_metrics.csv) and
+redraws
 the key figures with all three DGPs stacked vertically and substantially
 increased font sizes for publication-quality readability.
 
 The run directory is expected to hold one subfolder per study:
 
-    <root>/            run_simulation.py output (CRF, RF, NN, XGBoost)
-    <root>/padding/    run_padding.py output    (Padding, Padding-OOB)
-    <root>/v3/         an alternative location for the first of these,
-                       kept so earlier run directories still read
+    <root>/            run_simulation.py output: CRF, Padding, RF, NN
+                       and XGBoost, all from the one study
+    <root>/v3/, <root>/padding/
+                       alternative locations, kept so a run directory
+                       written by the earlier two-script layout still
+                       reads
 
 Rows carrying the same dgp/method/split in more than one of them are
 resolved in favour of the earlier entry in STUDY_DIRS.
@@ -29,8 +31,6 @@ OUTPUTS  (all in <root>/restacked_figures/)
     stacked_obs_pred_test.png       observed vs predicted, Test split
     stacked_metrics_test.png        metric boxplots, Test split
     stacked_metrics_train.png       metric boxplots, Train split
-    stacked_constraints_test.png    group residuals r_U / r_L, Test
-    stacked_constraints_train.png   group residuals r_U / r_L, Train
     stacked_theta.png               downstream association slopes
     stacked_lambda_curves.png       lambda sweep curves
     stacked_stage_curves.png        padding stage trajectories
@@ -51,10 +51,11 @@ import matplotlib.pyplot as plt
 OUT_DIR = sys.argv[1] if len(sys.argv) > 1 else \
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_out")
 
-# One subfolder per study; earlier entries win when rows collide. The
-# trailing "." picks up the CRF study, which writes its files directly
-# into the run directory, and it comes last so a study subfolder still
-# takes precedence over it.
+# Where to look for the CSVs, in order; earlier entries win when rows
+# collide. The study writes into the run directory itself, which is
+# the "." entry; the two subfolder names are kept so that a directory
+# written by the earlier layout, with the padding study in its own
+# folder, still reads.
 STUDY_DIRS = ("v3", "padding", ".")
 
 FIG_DIR = os.path.join(OUT_DIR, "restacked_figures")
@@ -94,7 +95,6 @@ _BASE_COLORS = {
     "Lasso": "#6A4C93",        # Deep Violet
     "RF-uncorr": "#577590",    # Muted Blue-Gray
     "Padding": "#B5179E",      # Magenta
-    "Padding-OOB": "#7209B7"   # Purple
 }
 
 _VARIANT_CYCLE = (
@@ -105,15 +105,8 @@ _VARIANT_CYCLE = (
 # Column order used by every figure. All five are drawn side by side.
 METHOD_ORDER = ("CRF", "Padding", "RF", "NN", "XGBoost")
 
-# Set True to carry the out-of-bag padding variant as a sixth column.
-INCLUDE_PADDING_OOB = False
-if INCLUDE_PADDING_OOB:
-    METHOD_ORDER = ("CRF", "Padding", "Padding-OOB", "RF", "NN", "XGBoost")
-
 # Methods produced by the post-hoc padding study (stage-trajectory figure).
-# Both variants appear there regardless of INCLUDE_PADDING_OOB, since the
-# gap between them is what that figure is for.
-PADDING_METHODS = ("Padding", "Padding-OOB")
+PADDING_METHODS = ("Padding",)
 
 
 def method_color(name):
@@ -148,21 +141,22 @@ DGP_ORDER = ["linear_sparse", "friedman1", "friedman2"]
 
 # ------------------------------------------------------------------
 # METRIC DEFINITIONS
+#
+# This is exactly the set reported in the paper's tables. r^2 (both
+# variants) and the two group residuals r_U, r_L were computed in
+# earlier runs but never reported, so they were dropped here along
+# with the stacked_constraints_*.png figure that existed only to show
+# them.
 # ------------------------------------------------------------------
-METRIC_KEYS = ("bias", "r2_pearson", "rmse", "mae", "theta_delta")
-SUMMARY_COLS = list(METRIC_KEYS) + ["r2_ols", "r_U", "r_L"]
+METRIC_KEYS = ("bias", "rmse", "mae", "theta_delta")
+SUMMARY_COLS = list(METRIC_KEYS)
 METRIC_LABELS = {
     "bias":        r"$\hat{\eta}$ (slope)",
     "rmse":        "RMSE",
-    "r2_pearson":  r"$r^2$ (Pearson)",
-    "r2_ols":      r"$R^2$ (OLS)",
     "mae":         "MAE",
-    "r_U":         r"$r_U$",
-    "r_L":         r"$r_L$",
     "theta_delta": r"$\hat{\theta}-\hat{\theta}_{\mathrm{oracle}}$",
 }
-METRIC_REFERENCE = {"bias": 1.0, "r2_pearson": None, "r2_ols": None,
-                    "rmse": None, "mae": None, "r_U": 0.0, "r_L": 0.0,
+METRIC_REFERENCE = {"bias": 1.0, "rmse": None, "mae": None,
                     "theta_delta": 0.0}
 
 
@@ -181,30 +175,6 @@ def mae(y_true, y_pred):
                                 - np.asarray(y_true, float))))
 
 
-def group_residuals(y_true, y_pred):
-    y_true, y_pred = np.asarray(y_true, float), np.asarray(y_pred, float)
-    mu = float(np.mean(y_true))
-    U, L = y_true >= mu, y_true < mu
-    return (float(np.mean(y_pred[U] - y_true[U])),
-            float(np.mean(y_pred[L] - y_true[L])))
-
-
-def r2_pearson(y_true, y_pred):
-    y_true, y_pred = np.asarray(y_true, float), np.asarray(y_pred, float)
-    sd = np.std(y_true) * np.std(y_pred)
-    if sd < 1e-12:
-        return np.nan
-    return float(np.cov(y_true, y_pred, bias=True)[0, 1] / sd) ** 2
-
-
-def r2_ols(y_true, y_pred):
-    y_true, y_pred = np.asarray(y_true, float), np.asarray(y_pred, float)
-    sst = float(np.sum((y_true - np.mean(y_true)) ** 2))
-    if sst < 1e-12:
-        return np.nan
-    return 1.0 - float(np.sum((y_pred - y_true) ** 2)) / sst
-
-
 def theta_slope(w, v):
     w, v = np.asarray(w, float), np.asarray(v, float)
     return float(np.cov(w, v, bias=True)[0, 1] / np.var(w))
@@ -215,15 +185,11 @@ def theta_delta(y_true, y_pred, w):
 
 
 def compute_metrics(y_true, y_pred, w=None):
-    rU, rL = group_residuals(y_true, y_pred)
     return dict(bias=eta_slope(y_true, y_pred),
                 rmse=rmse(y_true, y_pred),
-                r2_pearson=r2_pearson(y_true, y_pred),
-                r2_ols=r2_ols(y_true, y_pred),
                 mae=mae(y_true, y_pred),
                 theta_delta=(np.nan if w is None
-                             else theta_delta(y_true, y_pred, w)),
-                r_U=rU, r_L=rL)
+                             else theta_delta(y_true, y_pred, w)))
 
 
 # ------------------------------------------------------------------
@@ -460,7 +426,7 @@ def make_stacked_obs_pred(pred_df, split="Test"):
             heading = m if i == 0 else None
             _scatter_panel(ax, y, p, METHOD_COLORS.get(m, "#577590"),
                            lo, hi, heading=heading,
-                           annotate=("bias", "rmse", "r2_ols"), lam=lam)
+                           annotate=("bias", "rmse"), lam=lam)
             if j == 0:
                 ax.set_ylabel(DGP_LABELS.get(dgp, dgp), fontsize=18)
 
@@ -538,64 +504,7 @@ def make_stacked_metrics(per_sim, split="Test"):
 
 
 # ------------------------------------------------------------------
-# FIGURE 3:  CONSTRAINT RESIDUALS  (stacked by DGP)
-# ------------------------------------------------------------------
-def make_stacked_constraints(per_sim, split="Test"):
-    """One figure: DGPs as rows, (r_U, r_L) as columns."""
-    methods = [m for m in METHOD_ORDER if m in per_sim.method.unique()]
-    dgps = [d for d in DGP_ORDER if d in per_sim.dgp.unique()]
-    n_dgp = len(dgps)
-
-    fig, axes = plt.subplots(n_dgp, 2,
-                             figsize=(0.95 * len(methods) + 4.5, 5.2 * n_dgp),
-                             squeeze=False,
-                             sharex="col")
-
-    for i, dgp in enumerate(dgps):
-        d = per_sim[(per_sim.dgp == dgp) & (per_sim.split == split)]
-        for j, met in enumerate(("r_U", "r_L")):
-            ax = axes[i][j]
-            data, labels, colors = [], [], []
-            for meth in methods:
-                v = d[d.method == meth][met].dropna().values
-                if len(v):
-                    data.append(v)
-                    labels.append(meth)
-                    colors.append(METHOD_COLORS.get(meth, "#577590"))
-            if not data:
-                ax.set_visible(False)
-                continue
-            bp = _boxplot(ax, data, labels, widths=0.55)
-            for patch, c in zip(bp["boxes"], colors):
-                patch.set_facecolor(c)
-                patch.set_alpha(0.60)
-                patch.set_edgecolor(c)
-                patch.set_linewidth(1.5)
-            ax.axhline(0.0, color="black", ls="--", lw=1.8)
-            ax.set_ylabel(METRIC_LABELS[met], fontsize=18)
-            ax.grid(True, axis="y", alpha=0.25)
-            if len(labels) > 3:
-                ax.set_xticks(range(1, len(labels) + 1))
-                ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=14)
-            if i == 0:
-                ax.set_title(METRIC_LABELS[met], fontsize=20, pad=10)
-            if j == 0:
-                ax.text(-0.32, 0.5, DGP_LABELS.get(dgp, dgp),
-                        transform=ax.transAxes, fontsize=18,
-                        rotation=90, va="center", ha="center")
-
-    fig.suptitle("Group Residuals  (%s split)" % split,
-                 fontsize=24, fontweight="bold", y=1.01)
-    fig.tight_layout()
-    path = os.path.join(FIG_DIR, "stacked_constraints_%s.png" % split.lower())
-    fig.savefig(path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    print("wrote", path)
-    return path
-
-
-# ------------------------------------------------------------------
-# FIGURE 4:  DOWNSTREAM ASSOCIATION (THETA)  (stacked by DGP)
+# FIGURE 3:  DOWNSTREAM ASSOCIATION (THETA)  (stacked by DGP)
 # ------------------------------------------------------------------
 def make_stacked_theta(pred_df):
     """One figure: DGPs as rows, methods as columns."""
@@ -658,7 +567,7 @@ def make_stacked_theta(pred_df):
 
 
 # ------------------------------------------------------------------
-# FIGURE 5:  LAMBDA SWEEP CURVES  (stacked by DGP)
+# FIGURE 4:  LAMBDA SWEEP CURVES  (stacked by DGP)
 # ------------------------------------------------------------------
 def make_stacked_lambda_curves(sweep_df):
     """One figure: DGPs as rows, (slope, RMSE) as columns."""
@@ -719,7 +628,7 @@ def make_stacked_lambda_curves(sweep_df):
 
 
 # ------------------------------------------------------------------
-# FIGURE 6:  PADDING STAGE TRAJECTORIES  (stacked by DGP)
+# FIGURE 5:  PADDING STAGE TRAJECTORIES  (stacked by DGP)
 # ------------------------------------------------------------------
 def make_stacked_stage_curves(stage_df):
     """One figure: DGPs as rows, (slope, RMSE) as columns.
@@ -802,8 +711,6 @@ def main():
     if res_df is not None:
         make_stacked_metrics(res_df, split="Train")
         make_stacked_metrics(res_df, split="Test")
-        make_stacked_constraints(res_df, split="Train")
-        make_stacked_constraints(res_df, split="Test")
 
     if sweep_df is not None:
         make_stacked_lambda_curves(sweep_df)
