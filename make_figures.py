@@ -8,17 +8,14 @@ redraws
 the key figures with all three DGPs stacked vertically and substantially
 increased font sizes for publication-quality readability.
 
-The run directory is expected to hold one subfolder per study:
+The run directory holds the output of one study:
 
     <root>/            run_simulation.py output: CRF, Padding, RF, NN
                        and XGBoost, all from the one study
-    <root>/v3/, <root>/padding/
-                       alternative locations, kept so a run directory
-                       written by the earlier two-script layout still
-                       reads
 
-Rows carrying the same dgp/method/split in more than one of them are
-resolved in favour of the earlier entry in STUDY_DIRS.
+Only <root> itself is read. Subfolders left by the earlier two-script
+layout (<root>/v3/, <root>/padding/) are ignored, so results from an
+older run can never override the current one.
 
 USAGE
     python make_figures.py              # default: reads sim_out/
@@ -51,12 +48,18 @@ import matplotlib.pyplot as plt
 OUT_DIR = sys.argv[1] if len(sys.argv) > 1 else \
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "sim_out")
 
-# Where to look for the CSVs, in order; earlier entries win when rows
-# collide. The study writes into the run directory itself, which is
-# the "." entry; the two subfolder names are kept so that a directory
-# written by the earlier layout, with the padding study in its own
-# folder, still reads.
-STUDY_DIRS = ("v3", "padding", ".")
+# Where to look for the CSVs. The study writes into the run directory
+# itself, the "." entry, and only that directory is read. Subfolders
+# from the earlier layout ("v3", "padding") are deliberately NOT read:
+# when rows collided they used to win over the current run, which let
+# stale results computed under older DGP definitions override a fresh
+# study. If they exist they are reported and ignored.
+STUDY_DIRS = (".",)
+LEGACY_DIRS = ("v3", "padding")
+for _legacy in LEGACY_DIRS:
+    if os.path.isdir(os.path.join(OUT_DIR, _legacy)):
+        print("NOTE: ignoring legacy results folder %s; only files in %s "
+              "are read." % (os.path.join(OUT_DIR, _legacy), OUT_DIR))
 
 FIG_DIR = os.path.join(OUT_DIR, "restacked_figures")
 os.makedirs(FIG_DIR, exist_ok=True)
@@ -108,6 +111,14 @@ METHOD_ORDER = ("CRF", "Padding", "RF", "NN", "XGBoost")
 # Methods produced by the post-hoc padding study (stage-trajectory figure).
 PADDING_METHODS = ("Padding",)
 
+# Names drawn on the figures. The data keep the method key "Padding";
+# the paper calls this comparator "Post-hoc", so the figures do too.
+METHOD_DISPLAY = {"Padding": "Post-hoc"}
+
+
+def method_label(name):
+    return METHOD_DISPLAY.get(name, name)
+
 
 def method_color(name):
     if name in _BASE_COLORS:
@@ -132,7 +143,7 @@ DGP_DISPLAY = {"linear_sparse": "linear",
                "friedman1": "friedman1",
                "friedman2": "friedman2"}
 
-DGP_LABELS = {"linear_sparse": "Linear (sparse)",
+DGP_LABELS = {"linear_sparse": "Linear",
               "linear": "Linear (dense)",
               "friedman1": "Friedman 1",
               "friedman2": "Friedman 2"}
@@ -206,7 +217,7 @@ def _study_paths(filename):
 
 
 def _load_studies(filename, dedupe_keys, description):
-    """Concatenate one CSV across study subfolders; earlier studies win."""
+    """Read one CSV from the run directory (see STUDY_DIRS)."""
     paths = _study_paths(filename)
     if not paths:
         print("WARNING: no %s found under %s. Skipping %s."
@@ -362,7 +373,7 @@ def make_full_obs_pred_grid(pred_df):
             if y is None:
                 ax.set_visible(False)
                 continue
-            heading = m if r == 0 else None
+            heading = method_label(m) if r == 0 else None
             # Pass method-specific color for orderly visual distinction
             m_color = METHOD_COLORS.get(m, "#2B5C8F")
             _scatter_panel_ref(ax, y, p, color=m_color, heading=heading)
@@ -423,7 +434,7 @@ def make_stacked_obs_pred(pred_df, split="Test"):
             lam_df = pred_df[(pred_df.dgp == dgp) & (pred_df.method == m)
                              & (pred_df.split == split)]["lam"]
             lam = lam_df.iloc[0] if len(lam_df) else np.nan
-            heading = m if i == 0 else None
+            heading = method_label(m) if i == 0 else None
             _scatter_panel(ax, y, p, METHOD_COLORS.get(m, "#577590"),
                            lo, hi, heading=heading,
                            annotate=("bias", "rmse"), lam=lam)
@@ -466,7 +477,7 @@ def make_stacked_metrics(per_sim, split="Test"):
                 v = d[d.method == meth][met].dropna().values
                 if len(v):
                     data.append(v)
-                    labels.append(meth)
+                    labels.append(method_label(meth))
                     colors.append(METHOD_COLORS.get(meth, "#577590"))
             if not data:
                 ax.set_visible(False)
@@ -541,7 +552,7 @@ def make_stacked_theta(pred_df):
             ax.set_xlabel(r"$W$", fontsize=18)
             ax.set_ylabel("Predicted", fontsize=18)
             if i == 0:
-                ax.set_title(m, fontsize=20, pad=10)
+                ax.set_title(method_label(m), fontsize=20, pad=10)
             txt = (r"$\hat{\theta}$ = %.3f" "\n"
                    r"$\hat{\theta}-\hat{\theta}_{\mathrm{oracle}}$ = %.3f"
                    % (th, th - th_o))

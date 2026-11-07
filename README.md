@@ -15,6 +15,11 @@ run_simulation.py   the study: three DGPs x 100 replications, fitting CRF,
                     the post-hoc, RF, NN and XGBoost
 make_figures.py     redraws the key figures with the three DGPs stacked
                     vertically at publication font sizes
+supplementary_checks.py
+                    the two supplementary analyses reported in the
+                    paper: sensitivity to the number of trees B, and
+                    the downstream slope with the prediction used as a
+                    covariate rather than as the response
 requirements.txt    dependencies
 ```
 
@@ -39,12 +44,17 @@ each column of the results table faces identical data.
 
 ## 2. Requirements
 
+The versions below are the ones that produced the reported results.
+
 ```
-numpy
-pandas
-scikit-learn
-matplotlib
-xgboost
+numpy==2.5.2
+pandas==3.0.5
+scikit-learn==1.9.0
+scipy==1.18.0
+joblib==1.5.3
+threadpoolctl==3.6.0
+matplotlib==3.11.1
+xgboost==3.4.1
 ```
 
 ```
@@ -71,7 +81,15 @@ python run_simulation.py
 
 # the stacked figures                             -> sim_out/restacked_figures/
 python make_figures.py sim_out
+
+# supplementary analyses                          -> supplementary_out/
+python supplementary_checks.py trees 20          # B in {50,...,1000}
+python supplementary_checks.py downstream 100    # covariate-role slope
 ```
+
+`make_figures.py` reads only the run directory it is given. Result
+folders left by earlier layouts (`v3/`, `padding/`) are ignored, so a
+fresh study is never overridden by older files.
 
 | Command | Effect |
 | --- | --- |
@@ -103,7 +121,7 @@ Replications are independent and run in a process pool of `N_WORKERS` workers.
 Wall-clock time is printed at the end of the run, and the configuration and
 library versions that produced it are written to `run_config.txt`.
 
-The padding comparator is the most computationally expensive part of a run because it continues adding stages until the correction stabilizes rather than stopping after a fixed number of stages. In our testing, convergence typically required 25--45 stages. Runtime can be reduced by lowering `PAD_MAX_STAGES` or `PAD_STAGE_PATIENCE`, or by excluding the padding comparator through `--methods`.
+The padding comparator is the most computationally expensive part of a run because it continues adding stages until the correction stabilizes rather than stopping after a fixed number of stages. In the reported study every fit converged, after about 50 stages (49 on average). Runtime can be reduced by lowering `PAD_MAX_STAGES` or `PAD_STAGE_PATIENCE`, or by excluding the padding comparator through `--methods`.
 ---
 
 ## 4. The method

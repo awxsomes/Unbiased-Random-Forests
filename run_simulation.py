@@ -283,7 +283,7 @@ DGPS      = ("linear_sparse", "friedman1", "friedman2")
 # is therefore reported as 'linear' -- which is accurate as long as the
 # manuscript's DGP description says the coefficient vector is sparse.
 DGP_DISPLAY = {"linear_sparse": "linear"}
-N_WORKERS = max(1, (os.cpu_count() or 1))
+N_WORKERS = 8
 
 # ---- the constrained forest --------------------------------------
 N_TREES    = 500              # trees in the CRF (was 100)
@@ -350,7 +350,7 @@ PAD_MAX_DEPTH = 6
 PAD_MIN_SAMPLES_SPLIT = 2
 
 # The stopping rule. Stages run until the correction stops moving rather
-# than for a fixed count, which has been 25-45 stages in testing, so the
+# than for a fixed count, which has been about 50 stages in the study, so the
 # padding columns cost several times what a fixed-10-stage version did.
 # Lower PAD_MAX_STAGES first if a run has to fit a fixed window;
 # PAD_STAGE_PATIENCE is the next knob.
